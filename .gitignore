@@ -1,0 +1,9 @@
+build/
+build-*/
+*.user
+*.autosave
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+CMakeLists.txt.user

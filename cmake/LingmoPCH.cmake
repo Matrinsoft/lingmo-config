@@ -1,0 +1,12 @@
+function(lingmo_pch target)
+    cmake_parse_arguments(PCH "" "" "PUBLIC;PRIVATE" ${ARGN})
+    set(PUBLIC_HEADERS ${PCH_PUBLIC})
+    set(PRIVATE_HEADERS ${PCH_PRIVATE})
+
+    if(PRIVATE_HEADERS)
+        target_precompile_headers(${target} PRIVATE ${PRIVATE_HEADERS})
+    endif()
+    if(PUBLIC_HEADERS)
+        target_precompile_headers(${target} PUBLIC ${PUBLIC_HEADERS})
+    endif()
+endfunction()
