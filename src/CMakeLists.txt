@@ -1,15 +1,18 @@
 set(PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/LingmoConfig/Config.h
+    ${CMAKE_SOURCE_DIR}/include/LingmoConfig/ConfigSchema.h
     ${CMAKE_SOURCE_DIR}/include/LingmoConfig/ConfigWatcher.h
 )
 
 set(PRIVATE_HEADERS
     private/Config_p.h
+    private/ConfigSchema_p.h
     private/ConfigWatcher_p.h
 )
 
 set(SOURCES
     Config.cpp
+    ConfigSchema.cpp
     ConfigWatcher.cpp
 )
 

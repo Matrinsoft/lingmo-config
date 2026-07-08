@@ -12,20 +12,17 @@
 namespace Lingmo {
 
 class ConfigWatcher;
+class ConfigSchema;
 class ConfigPrivate;
 
 // Configuration system providing layered key-value storage.
 //
 // Config resolution priority (highest first):
 //   1. Session overrides (set via setSessionValue)
-//   2. User config (~/.config/lingmo/<name>.conf)
-//   3. System config (/etc/lingmo/<name>.conf)
+//   2. User config (~/.config/lingmo/<name>.conf or .json)
+//   3. System config (/etc/lingmo/<name>.conf or .json)
 //
-// Config files use INI format with groups:
-//   [General]
-//   themeName = lingmo-dark
-//   [Input]
-//   touchpadEnabled = true
+// Supported formats: INI and JSON.
 class LINGMOCONFIG_EXPORT Config : public QObject
 {
     Q_OBJECT
@@ -38,38 +35,52 @@ public:
 
     QString name() const;
 
-    // Load configuration from a specific file path
+    // ── Loading ───────────────────────────────────────────
+
+    // Load from a specific file (auto-detects INI vs JSON by extension)
     bool loadFromFile(const QString &filePath);
 
-    // Load configuration from a directory (scans for <name>.conf)
+    // Load from a directory (scans for <name>.conf, <name>.json)
     bool loadFromDir(const QString &dirPath);
 
     // Load layered config (system + user + session)
-    // systemDir defaults to /etc/lingmo/
-    // userDir defaults to ~/.config/lingmo/
     bool load(const QString &systemDir = {},
               const QString &userDir = {});
 
-    // Save user configuration
+    // ── Saving ────────────────────────────────────────────
+
     bool save();
     bool saveToFile(const QString &filePath) const;
 
-    // Key-value access
+    // ── Key-value access ──────────────────────────────────
+
     QVariant value(const QString &key, const QVariant &defaultValue = {}) const;
     void setValue(const QString &key, const QVariant &value);
     bool contains(const QString &key) const;
     void remove(const QString &key);
 
-    // Group-based access
+    // ── Group access ──────────────────────────────────────
+
     QStringList groups() const;
     QVariantMap groupValues(const QString &group) const;
 
-    // Session overrides (highest priority, not persisted)
+    // ── Session overrides ─────────────────────────────────
+
     QVariant sessionValue(const QString &key, const QVariant &defaultValue = {}) const;
     void setSessionValue(const QString &key, const QVariant &value);
     void clearSession();
 
-    // File watching
+    // ── Schema validation ─────────────────────────────────
+
+    void setSchema(ConfigSchema *schema);
+    ConfigSchema *schema() const;
+
+    // Validate all current values against the schema.
+    // Returns true if all values are valid.
+    bool validate() const;
+
+    // ── File watching ─────────────────────────────────────
+
     ConfigWatcher *watcher() const;
 
 Q_SIGNALS:
@@ -78,6 +89,7 @@ Q_SIGNALS:
     void fileChanged();
     void loaded();
     void saved();
+    void validationFailed(const QString &key, const QString &error);
 
 private:
     std::unique_ptr<ConfigPrivate> d;

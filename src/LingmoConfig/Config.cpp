@@ -1,13 +1,15 @@
 #include "private/Config_p.h"
 #include "private/ConfigWatcher_p.h"
 #include <LingmoConfig/ConfigWatcher.h>
+#include <LingmoConfig/ConfigSchema.h>
 
 #include <QFile>
 #include <QTextStream>
 #include <QDir>
 #include <QStandardPaths>
-#include <QSettings>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 namespace Lingmo {
 
@@ -23,6 +25,16 @@ ConfigPrivate::ConfigPrivate(Config *qq, const QString &configName)
 
 ConfigPrivate::~ConfigPrivate() = default;
 
+ConfigPrivate::Format ConfigPrivate::detectFormat(const QString &filePath)
+{
+    if (filePath.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+        return Format::JSON;
+    if (filePath.endsWith(QLatin1String(".conf"), Qt::CaseInsensitive)
+        || filePath.endsWith(QLatin1String(".ini"), Qt::CaseInsensitive))
+        return Format::INI;
+    return Format::Unknown;
+}
+
 QVariantMap ConfigPrivate::parseIniContent(const QString &content)
 {
     QVariantMap result;
@@ -32,29 +44,23 @@ QVariantMap ConfigPrivate::parseIniContent(const QString &content)
     for (const QString &line : lines) {
         const QString trimmed = line.trimmed();
 
-        // Skip comments and empty lines
         if (trimmed.isEmpty() || trimmed.startsWith(QLatin1Char('#'))
             || trimmed.startsWith(QLatin1Char(';'))) {
             continue;
         }
 
-        // Group header: [GroupName]
         if (trimmed.startsWith(QLatin1Char('[')) && trimmed.endsWith(QLatin1Char(']'))) {
             currentGroup = trimmed.mid(1, trimmed.size() - 2).trimmed();
             continue;
         }
 
-        // Key = Value
         const int eqPos = trimmed.indexOf(QLatin1Char('='));
         if (eqPos > 0) {
             const QString key = trimmed.left(eqPos).trimmed();
             const QString value = trimmed.mid(eqPos + 1).trimmed();
-
-            // Build qualified key: Group/key or just key
             const QString qualifiedKey = currentGroup.isEmpty()
                 ? key
                 : currentGroup + QLatin1Char('/') + key;
-
             result.insert(qualifiedKey, QVariant(value));
         }
     }
@@ -62,38 +68,69 @@ QVariantMap ConfigPrivate::parseIniContent(const QString &content)
     return result;
 }
 
-bool ConfigPrivate::loadIniFile(const QString &filePath)
+QVariantMap ConfigPrivate::parseJsonContent(const QString &content)
 {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(content.toUtf8());
+    if (doc.isNull() || !doc.isObject())
+        return {};
 
-    QTextStream stream(&file);
-    const QString content = stream.readAll();
-    file.close();
+    QVariantMap result;
+    const QJsonObject obj = doc.object();
 
-    const QVariantMap values = parseIniContent(content);
-    return !values.isEmpty();
+    // Flatten nested JSON to Group/key format
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        if (it.value().isObject()) {
+            const QJsonObject group = it.value().toObject();
+            for (auto git = group.constBegin(); git != group.constEnd(); ++git) {
+                const QString qualifiedKey = it.key() + QLatin1Char('/') + git.key();
+                result.insert(qualifiedKey, git.value().toVariant());
+            }
+        } else {
+            result.insert(it.key(), it.value().toVariant());
+        }
+    }
+
+    return result;
+}
+
+QString ConfigPrivate::serializeToJson(const QVariantMap &values)
+{
+    QJsonObject root;
+
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        const QString key = it.key();
+        const int slashPos = key.indexOf(QLatin1Char('/'));
+
+        if (slashPos > 0) {
+            const QString group = key.left(slashPos);
+            const QString subKey = key.mid(slashPos + 1);
+            if (!root.contains(group)) {
+                root.insert(group, QJsonObject());
+            }
+            QJsonObject groupObj = root.value(group).toObject();
+            groupObj.insert(subKey, QJsonValue::fromVariant(it.value()));
+            root.insert(group, groupObj);
+        } else {
+            root.insert(key, QJsonValue::fromVariant(it.value()));
+        }
+    }
+
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
 void ConfigPrivate::mergeMaps(QVariantMap &target, const QVariantMap &source)
 {
-    auto it = source.constBegin();
-    while (it != source.constEnd()) {
+    for (auto it = source.constBegin(); it != source.constEnd(); ++it) {
         target.insert(it.key(), it.value());
-        ++it;
     }
 }
 
 void ConfigPrivate::rebuildCache()
 {
     resolvedCache.clear();
-
-    // Merge in priority order: system < user < session
     mergeMaps(resolvedCache, systemValues);
     mergeMaps(resolvedCache, userValues);
     mergeMaps(resolvedCache, sessionValues);
-
     cacheDirty = false;
 }
 
@@ -115,11 +152,23 @@ bool Config::loadFromFile(const QString &filePath)
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
 
-    QTextStream stream(&file);
+    const QTextStream stream(&file);
     const QString content = stream.readAll();
     file.close();
 
-    const QVariantMap values = ConfigPrivate::parseIniContent(content);
+    const auto format = ConfigPrivate::detectFormat(filePath);
+    QVariantMap values;
+
+    switch (format) {
+    case ConfigPrivate::Format::JSON:
+        values = ConfigPrivate::parseJsonContent(content);
+        break;
+    case ConfigPrivate::Format::INI:
+    case ConfigPrivate::Format::Unknown:
+        values = ConfigPrivate::parseIniContent(content);
+        break;
+    }
+
     if (values.isEmpty())
         return false;
 
@@ -134,17 +183,19 @@ bool Config::loadFromFile(const QString &filePath)
 bool Config::loadFromDir(const QString &dirPath)
 {
     const QDir dir(dirPath);
+
+    // Try JSON first, then INI
+    const QString jsonFile = d->name + QStringLiteral(".json");
+    if (dir.exists(jsonFile))
+        return loadFromFile(dir.absoluteFilePath(jsonFile));
+
     const QString confFile = d->name + QStringLiteral(".conf");
-
-    if (dir.exists(confFile)) {
+    if (dir.exists(confFile))
         return loadFromFile(dir.absoluteFilePath(confFile));
-    }
 
-    // Also try .ini extension
     const QString iniFile = d->name + QStringLiteral(".ini");
-    if (dir.exists(iniFile)) {
+    if (dir.exists(iniFile))
         return loadFromFile(dir.absoluteFilePath(iniFile));
-    }
 
     return false;
 }
@@ -154,47 +205,24 @@ bool Config::load(const QString &systemDir, const QString &userDir)
     d->systemValues.clear();
     d->userValues.clear();
 
-    // Determine directories
     const QString sysDir = systemDir.isEmpty()
-        ? QStringLiteral("/etc/lingmo")
-        : systemDir;
-
+        ? QStringLiteral("/etc/lingmo") : systemDir;
     const QString usrDir = userDir.isEmpty()
-        ? d->userConfigDir
-        : userDir;
+        ? d->userConfigDir : userDir;
 
     // Load system config (lowest priority)
-    const QDir systemDirObj(sysDir);
-    const QString sysConf = d->name + QStringLiteral(".conf");
-    if (systemDirObj.exists(sysConf)) {
-        QFile file(systemDirObj.absoluteFilePath(sysConf));
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream stream(&file);
-            d->systemValues = ConfigPrivate::parseIniContent(stream.readAll());
-            file.close();
-        }
-    }
+    loadFromDir(sysDir);
+    d->systemValues = d->userValues;
+    d->userValues.clear();
+    d->activeFilePath.clear();
 
     // Load user config (higher priority)
-    const QDir userDirObj(usrDir);
-    const QString usrConf = d->name + QStringLiteral(".conf");
-    if (userDirObj.exists(usrConf)) {
-        const QString path = userDirObj.absoluteFilePath(usrConf);
-        QFile file(path);
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream stream(&file);
-            d->userValues = ConfigPrivate::parseIniContent(stream.readAll());
-            d->activeFilePath = path;
-            file.close();
-        }
-    }
+    loadFromDir(usrDir);
 
     d->cacheDirty = true;
 
-    // Start watching if watcher exists
-    if (d->watcher && !d->activeFilePath.isEmpty()) {
+    if (d->watcher && !d->activeFilePath.isEmpty())
         d->watcher->watch(d->activeFilePath);
-    }
 
     emit loaded();
     return true;
@@ -203,7 +231,6 @@ bool Config::load(const QString &systemDir, const QString &userDir)
 bool Config::save()
 {
     if (d->activeFilePath.isEmpty()) {
-        // Create user config path
         QDir().mkpath(d->userConfigDir);
         d->activeFilePath = d->userConfigDir + QLatin1Char('/') + d->name
                            + QStringLiteral(".conf");
@@ -213,45 +240,48 @@ bool Config::save()
 
 bool Config::saveToFile(const QString &filePath) const
 {
+    const auto format = ConfigPrivate::detectFormat(filePath);
+    const QVariantMap &data = d->userValues;
+
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
         return false;
 
     QTextStream stream(&file);
-    stream << QStringLiteral("# Lingmo Config - %1\n\n").arg(d->name);
 
-    // Group values by prefix
-    QMap<QString, QMap<QString, QVariant>> grouped;
-    for (auto it = d->userValues.constBegin(); it != d->userValues.constEnd(); ++it) {
-        const QString key = it.key();
-        const int slashPos = key.indexOf(QLatin1Char('/'));
-        if (slashPos > 0) {
-            const QString group = key.left(slashPos);
-            const QString subKey = key.mid(slashPos + 1);
-            grouped[group].insert(subKey, it.value());
-        } else {
-            grouped[QString()].insert(key, it.value());
-        }
-    }
+    if (format == ConfigPrivate::Format::JSON) {
+        stream << ConfigPrivate::serializeToJson(data);
+    } else {
+        // INI format
+        stream << QStringLiteral("# Lingmo Config - %1\n\n").arg(d->name);
 
-    // Write ungrouped keys first
-    if (grouped.contains(QString())) {
-        const auto &ungrouped = grouped.value(QString());
-        for (auto it = ungrouped.constBegin(); it != ungrouped.constEnd(); ++it) {
-            stream << it.key() << QStringLiteral(" = ") << it.value().toString() << QStringLiteral("\n");
+        QMap<QString, QMap<QString, QVariant>> grouped;
+        for (auto it = data.constBegin(); it != data.constEnd(); ++it) {
+            const int slashPos = it.key().indexOf(QLatin1Char('/'));
+            if (slashPos > 0) {
+                grouped[it.key().left(slashPos)].insert(
+                    it.key().mid(slashPos + 1), it.value());
+            } else {
+                grouped[QString()].insert(it.key(), it.value());
+            }
         }
-        stream << QStringLiteral("\n");
-    }
 
-    // Write grouped keys
-    for (auto git = grouped.constBegin(); git != grouped.constEnd(); ++git) {
-        if (git.key().isEmpty()) continue;
-        stream << QStringLiteral("[") << git.key() << QStringLiteral("]\n");
-        const auto &vals = git.value();
-        for (auto it = vals.constBegin(); it != vals.constEnd(); ++it) {
-            stream << it.key() << QStringLiteral(" = ") << it.value().toString() << QStringLiteral("\n");
+        if (grouped.contains(QString())) {
+            for (auto it = grouped.value(QString()).constBegin();
+                 it != grouped.value(QString()).constEnd(); ++it) {
+                stream << it.key() << " = " << it.value().toString() << "\n";
+            }
+            stream << "\n";
         }
-        stream << QStringLiteral("\n");
+
+        for (auto git = grouped.constBegin(); git != grouped.constEnd(); ++git) {
+            if (git.key().isEmpty()) continue;
+            stream << "[" << git.key() << "]\n";
+            for (auto it = git.value().constBegin(); it != git.value().constEnd(); ++it) {
+                stream << it.key() << " = " << it.value().toString() << "\n";
+            }
+            stream << "\n";
+        }
     }
 
     file.close();
@@ -263,18 +293,25 @@ QVariant Config::value(const QString &key, const QVariant &defaultValue) const
 {
     if (d->cacheDirty)
         const_cast<ConfigPrivate *>(d.get())->rebuildCache();
-
     return d->resolvedCache.value(key, defaultValue);
 }
 
 void Config::setValue(const QString &key, const QVariant &value)
 {
+    // Validate against schema if set
+    if (d->schema) {
+        const QString error = d->schema->validate(key, value);
+        if (!error.isEmpty()) {
+            emit validationFailed(key, error);
+            return;
+        }
+    }
+
     if (d->userValues.value(key) == value)
         return;
 
     d->userValues.insert(key, value);
     d->cacheDirty = true;
-
     emit valueChanged(key, value);
 }
 
@@ -282,7 +319,6 @@ bool Config::contains(const QString &key) const
 {
     if (d->cacheDirty)
         const_cast<ConfigPrivate *>(d.get())->rebuildCache();
-
     return d->resolvedCache.contains(key);
 }
 
@@ -290,24 +326,20 @@ void Config::remove(const QString &key)
 {
     if (!d->userValues.contains(key))
         return;
-
     d->userValues.remove(key);
     d->cacheDirty = true;
-
     emit valueChanged(key, QVariant());
 }
 
 QStringList Config::groups() const
 {
-    QSet<QString> groups;
+    QSet<QString> grp;
     const QVariantMap &map = d->userValues.isEmpty() ? d->systemValues : d->userValues;
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
-        const int slashPos = it.key().indexOf(QLatin1Char('/'));
-        if (slashPos > 0) {
-            groups.insert(it.key().left(slashPos));
-        }
+        const int pos = it.key().indexOf(QLatin1Char('/'));
+        if (pos > 0) grp.insert(it.key().left(pos));
     }
-    return QStringList(groups.begin(), groups.end());
+    return QStringList(grp.begin(), grp.end());
 }
 
 QVariantMap Config::groupValues(const QString &group) const
@@ -316,9 +348,8 @@ QVariantMap Config::groupValues(const QString &group) const
     const QString prefix = group + QLatin1Char('/');
     const QVariantMap &map = d->userValues.isEmpty() ? d->systemValues : d->userValues;
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
-        if (it.key().startsWith(prefix)) {
+        if (it.key().startsWith(prefix))
             result.insert(it.key().mid(prefix.size()), it.value());
-        }
     }
     return result;
 }
@@ -332,7 +363,6 @@ void Config::setSessionValue(const QString &key, const QVariant &value)
 {
     d->sessionValues.insert(key, value);
     d->cacheDirty = true;
-
     emit valueChanged(key, value);
 }
 
@@ -340,6 +370,30 @@ void Config::clearSession()
 {
     d->sessionValues.clear();
     d->cacheDirty = true;
+}
+
+void Config::setSchema(ConfigSchema *schema)
+{
+    d->schema = schema;
+}
+
+ConfigSchema *Config::schema() const
+{
+    return d->schema;
+}
+
+bool Config::validate() const
+{
+    if (!d->schema) return true;
+
+    if (d->cacheDirty)
+        const_cast<ConfigPrivate *>(d.get())->rebuildCache();
+
+    const auto errors = d->schema->validateAll(d->resolvedCache);
+    for (auto it = errors.constBegin(); it != errors.constEnd(); ++it) {
+        emit const_cast<Config *>(this)->validationFailed(it.key(), it.value());
+    }
+    return errors.isEmpty();
 }
 
 ConfigWatcher *Config::watcher() const

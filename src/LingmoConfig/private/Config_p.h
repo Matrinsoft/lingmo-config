@@ -2,12 +2,13 @@
 
 #include <LingmoConfig/Config.h>
 
-#include <QSettings>
 #include <QVariantMap>
 #include <QString>
 #include <QDir>
 
 namespace Lingmo {
+
+class ConfigSchema;
 
 class ConfigPrivate
 {
@@ -15,11 +16,17 @@ public:
     explicit ConfigPrivate(Config *qq, const QString &configName);
     ~ConfigPrivate();
 
-    // Parse INI content from a file
-    bool loadIniFile(const QString &filePath);
-
     // Merge values from source into target (source wins on conflict)
     static void mergeMaps(QVariantMap &target, const QVariantMap &source);
+
+    // Detect format from file extension
+    enum class Format { INI, JSON, Unknown };
+    static Format detectFormat(const QString &filePath);
+
+    // Parse content by format
+    static QVariantMap parseIniContent(const QString &content);
+    static QVariantMap parseJsonContent(const QString &content);
+    static QString serializeToJson(const QVariantMap &values);
 
     Config *q;
     QString name;
@@ -34,15 +41,13 @@ public:
     bool cacheDirty = true;
 
     // File paths
-    QString systemConfigPath;
-    QString userConfigPath;
     QString userConfigDir;
-    QString activeFilePath;  // file currently loaded from
+    QString activeFilePath;
 
     ConfigWatcher *watcher = nullptr;
+    ConfigSchema *schema = nullptr;
 
     void rebuildCache();
-    static QVariantMap parseIniContent(const QString &content);
 };
 
 } // namespace Lingmo

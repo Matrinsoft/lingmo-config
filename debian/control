@@ -1,0 +1,27 @@
+Source: lingmo-config
+Section: libs
+Priority: optional
+Maintainer: Lingmo OS Team <team@lingmo.org>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.21),
+               qt6-base-dev (>= 6.5)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: liblingmoconfig1
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Lingmo Desktop - Configuration system (shared library)
+ Lingmo Config provides a layered key-value configuration system for
+ Lingmo Desktop components, supporting INI and JSON formats with
+ file watching and schema validation.
+
+Package: liblingmoconfig-dev
+Architecture: any
+Section: libdevel
+Depends: liblingmoconfig1 (= ${binary:Version}),
+         qt6-base-dev (>= 6.5),
+         ${misc:Depends}
+Description: Lingmo Desktop - Configuration system (development files)
+ This package contains the development headers and CMake integration
+ for Lingmo Config.

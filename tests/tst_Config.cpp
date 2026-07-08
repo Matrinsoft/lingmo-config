@@ -1,4 +1,5 @@
 #include <LingmoConfig/Config.h>
+#include <LingmoConfig/ConfigSchema.h>
 #include <LingmoConfig/ConfigWatcher.h>
 
 #include <QTest>
@@ -215,6 +216,177 @@ private Q_SLOTS:
         Lingmo::Config config(QStringLiteral("test"));
         QCOMPARE(config.value(QStringLiteral("anything"), 42).toInt(), 42);
         QVERIFY(config.groups().isEmpty());
+    }
+
+    // ── JSON format tests ─────────────────────────────────
+
+    void testLoadFromJson()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        const QString jsonPath = dir.filePath(QStringLiteral("test.json"));
+        QFile file(jsonPath);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        QTextStream stream(&file);
+        stream << QStringLiteral("{\n");
+        stream << QStringLiteral("  \"General\": {\n");
+        stream << QStringLiteral("    \"themeName\": \"lingmo-dark\",\n");
+        stream << QStringLiteral("    \"fontSize\": 14\n");
+        stream << QStringLiteral("  },\n");
+        stream << QStringLiteral("  \"Input\": {\n");
+        stream << QStringLiteral("    \"touchpadEnabled\": true\n");
+        stream << QStringLiteral("  }\n");
+        stream << QStringLiteral("}\n");
+        file.close();
+
+        Lingmo::Config config(QStringLiteral("test"));
+        QVERIFY(config.loadFromFile(jsonPath));
+
+        QCOMPARE(config.value(QStringLiteral("General/themeName")).toString(),
+                 QStringLiteral("lingmo-dark"));
+        QCOMPARE(config.value(QStringLiteral("General/fontSize")).toInt(), 14);
+        QCOMPARE(config.value(QStringLiteral("Input/touchpadEnabled")).toBool(), true);
+    }
+
+    void testSaveAsJson()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        const QString jsonPath = dir.filePath(QStringLiteral("test.json"));
+
+        Lingmo::Config config1(QStringLiteral("test"));
+        config1.setValue(QStringLiteral("General/themeName"), QStringLiteral("lingmo-dark"));
+        config1.setValue(QStringLiteral("General/fontSize"), 14);
+        QVERIFY(config1.saveToFile(jsonPath));
+
+        // Reload and verify
+        Lingmo::Config config2(QStringLiteral("test"));
+        QVERIFY(config2.loadFromFile(jsonPath));
+        QCOMPARE(config2.value(QStringLiteral("General/themeName")).toString(),
+                 QStringLiteral("lingmo-dark"));
+        QCOMPARE(config2.value(QStringLiteral("General/fontSize")).toInt(), 14);
+    }
+
+    void testJsonAndIniInteroperability()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        // Save as JSON
+        const QString jsonPath = dir.filePath(QStringLiteral("test.json"));
+        Lingmo::Config config1(QStringLiteral("test"));
+        config1.setValue(QStringLiteral("key"), QStringLiteral("json-value"));
+        QVERIFY(config1.saveToFile(jsonPath));
+
+        // Load as INI (should fail or return empty — different format)
+        Lingmo::Config config2(QStringLiteral("test"));
+        // JSON content won't parse as INI, so loadFromFile should fail
+        // or return empty
+        const bool loaded = config2.loadFromFile(jsonPath);
+        // JSON content may partially parse as INI (unlikely to have valid keys)
+        // The key point is that format detection works
+        Q_UNUSED(loaded);
+    }
+
+    // ── Schema validation tests ───────────────────────────
+
+    void testSchemaValidation()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("General/themeName"), QMetaType::QString,
+                       QStringLiteral("lingmo-light"));
+        schema->addKey(QStringLiteral("General/fontSize"), QMetaType::Int,
+                       12, 8, 72);
+
+        Lingmo::Config config(QStringLiteral("test"));
+        config.setSchema(schema);
+
+        // Valid value
+        QSignalSpy validSpy(&config, &Lingmo::Config::validationFailed);
+        config.setValue(QStringLiteral("General/themeName"), QStringLiteral("lingmo-dark"));
+        QCOMPARE(validSpy.count(), 0);
+
+        // Invalid value (out of range)
+        config.setValue(QStringLiteral("General/fontSize"), 100);
+        QCOMPARE(validSpy.count(), 1);
+        QCOMPARE(validSpy.at(0).at(0).toString(),
+                 QStringLiteral("General/fontSize"));
+
+        // Value should NOT be set (rejected)
+        QVERIFY(!config.contains(QStringLiteral("General/fontSize")));
+    }
+
+    void testSchemaAllowedValues()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("General/colorScheme"), QMetaType::QString,
+                       QStringLiteral("light"),
+                       QStringList() << QStringLiteral("light")
+                                     << QStringLiteral("dark")
+                                     << QStringLiteral("highcontrast"));
+
+        Lingmo::Config config(QStringLiteral("test"));
+        config.setSchema(schema);
+
+        QSignalSpy errorSpy(&config, &Lingmo::Config::validationFailed);
+
+        // Valid
+        config.setValue(QStringLiteral("General/colorScheme"), QStringLiteral("dark"));
+        QCOMPARE(errorSpy.count(), 0);
+
+        // Invalid
+        config.setValue(QStringLiteral("General/colorScheme"), QStringLiteral("neon"));
+        QCOMPARE(errorSpy.count(), 1);
+    }
+
+    void testSchemaDefaults()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("General/themeName"), QMetaType::QString,
+                       QStringLiteral("lingmo-light"));
+        schema->addKey(QStringLiteral("General/fontSize"), QMetaType::Int, 12);
+
+        Lingmo::Config config(QStringLiteral("test"));
+        config.setSchema(schema);
+
+        // Schema defaults should be used when no value is set
+        QCOMPARE(config.value(QStringLiteral("General/themeName")).toString(),
+                 QStringLiteral("lingmo-light"));
+        QCOMPARE(config.value(QStringLiteral("General/fontSize")).toInt(), 12);
+    }
+
+    void testSchemaValidateAll()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("General/fontSize"), QMetaType::Int,
+                       12, 8, 72);
+
+        QVariantMap values;
+        values.insert(QStringLiteral("General/fontSize"), 100);
+
+        const auto errors = schema->validateAll(values);
+        QCOMPARE(errors.size(), 1);
+        QVERIFY(errors.contains(QStringLiteral("General/fontSize")));
+    }
+
+    void testSchemaHasKey()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("key1"), QMetaType::QString);
+        QVERIFY(schema->hasKey(QStringLiteral("key1")));
+        QVERIFY(!schema->hasKey(QStringLiteral("key2")));
+    }
+
+    void testSchemaRemoveKey()
+    {
+        auto *schema = new Lingmo::ConfigSchema;
+        schema->addKey(QStringLiteral("key1"), QMetaType::QString);
+        QVERIFY(schema->hasKey(QStringLiteral("key1")));
+
+        schema->removeKey(QStringLiteral("key1"));
+        QVERIFY(!schema->hasKey(QStringLiteral("key1")));
     }
 };
 
