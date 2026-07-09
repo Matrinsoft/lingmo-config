@@ -152,7 +152,7 @@ bool Config::loadFromFile(const QString &filePath)
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
 
-    const QTextStream stream(&file);
+    QTextStream stream(&file);
     const QString content = stream.readAll();
     file.close();
 

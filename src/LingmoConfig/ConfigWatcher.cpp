@@ -35,7 +35,11 @@ ConfigWatcher::~ConfigWatcher() = default;
 
 void ConfigWatcher::watch(const QString &filePath)
 {
-    d->stop();
+    // Stop watching previous file
+    if (!d->watchedPath.isEmpty()) {
+        d->fsWatcher->removePath(d->watchedPath);
+        d->watchedPath.clear();
+    }
 
     if (filePath.isEmpty())
         return;

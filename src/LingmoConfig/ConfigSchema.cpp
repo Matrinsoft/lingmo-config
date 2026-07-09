@@ -87,8 +87,9 @@ QString ConfigSchema::validate(const QString &key, const QVariant &value) const
 
     // Check range (for numeric types)
     if (sk.hasRange && !value.isNull()) {
-        const bool less = (value < sk.minValue);
-        const bool greater = (value > sk.maxValue);
+        const double numVal = value.toDouble();
+        const bool less = (numVal < sk.minValue.toDouble());
+        const bool greater = (numVal > sk.maxValue.toDouble());
         if (less || greater) {
             return QStringLiteral("Value for '%1' out of range [%2, %3]: %4")
                 .arg(key)
