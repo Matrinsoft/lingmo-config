@@ -5,15 +5,15 @@ set(PUBLIC_HEADERS
 )
 
 set(PRIVATE_HEADERS
-    private/Config_p.h
-    private/ConfigSchema_p.h
-    private/ConfigWatcher_p.h
+    LingmoConfig/private/Config_p.h
+    LingmoConfig/private/ConfigSchema_p.h
+    LingmoConfig/private/ConfigWatcher_p.h
 )
 
 set(SOURCES
-    Config.cpp
-    ConfigSchema.cpp
-    ConfigWatcher.cpp
+    LingmoConfig/Config.cpp
+    LingmoConfig/ConfigSchema.cpp
+    LingmoConfig/ConfigWatcher.cpp
 )
 
 set(CMAKE_AUTOMOC ON)
